@@ -23,6 +23,22 @@ Check out this short video to get excited!
 - Node.js
 - tmux installed and running
 
+## Known Issues & Solutions
+
+### Command Timeouts
+
+If commands timeout but complete successfully in tmux:
+
+**Cause:** Shell initialization with heavy plugins (Oh-My-Zsh, kubectl/aws completions) can take 10-30 seconds.
+
+**Solution:** Increase timeout values:
+```javascript
+// In MCP tool calls
+{ "timeout": 30000 }  // 30 seconds for kubectl/cloud commands
+```
+
+See [TIMEOUT-TROUBLESHOOTING.md](TIMEOUT-TROUBLESHOOTING.md) for detailed diagnostics and solutions.
+
 ## Usage
 
 ### Configure Claude Desktop
@@ -74,4 +90,34 @@ The MCP server needs to know the shell only when executing commands, to properly
 - `kill-pane` - Kill a tmux pane by ID
 - `execute-command` - Execute a command in a tmux pane
 - `get-command-result` - Get the result of an executed command
+
+## Development
+
+### Running Tests
+
+The project includes comprehensive automated unit tests:
+
+```bash
+# Install dependencies
+npm install
+
+# Build the project
+npm run build
+
+# Create the required tmux session
+tmux new-session -d -s aibot -n aiexec
+
+# Run tests
+npm test
+```
+
+The test suite includes 21 assertions covering:
+- Command execution with output
+- Failed commands (non-zero exit codes)
+- Empty output handling
+- Various exit codes (1, 2, 127, 255)
+- **Critical:** Multiple commands in sequence (marker matching)
+- Multi-line output
+
+See `TESTING.md` for detailed testing documentation.
 
