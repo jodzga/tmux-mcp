@@ -189,6 +189,136 @@ async function testMultiLineOutput() {
   }
 }
 
+async function testHeredocWithSuccessfulCommand() {
+  console.log('\n--- Test: CRITICAL - Heredoc with successful Python command ---');
+  console.log('This tests that exit codes are captured correctly for heredoc commands\n');
+  
+  try {
+    const command = `python3 << 'EOF'
+import sys
+print("Hello from Python")
+print("Line 2")
+sys.exit(0)
+EOF`;
+    
+    const result = await tmux.executeCommand(command, 10000);
+    
+    const checks = [
+      {
+        name: 'Status is completed',
+        pass: result.status === 'completed',
+        details: `Expected 'completed', got '${result.status}'`
+      },
+      {
+        name: 'Exit code is 0',
+        pass: result.exitCode === 0,
+        details: `Expected 0, got ${result.exitCode}`
+      },
+      {
+        name: 'Output contains Python output',
+        pass: result.result.includes('Hello from Python') && result.result.includes('Line 2'),
+        details: `Result: "${result.result}"`
+      }
+    ];
+    
+    let allPassed = true;
+    for (const check of checks) {
+      logTest(check.name, check.pass, check.pass ? '' : check.details);
+      if (!check.pass) allPassed = false;
+    }
+    
+    return allPassed;
+  } catch (error) {
+    logTest('Heredoc with successful command', false, error.message);
+    return false;
+  }
+}
+
+async function testHeredocWithFailedCommand() {
+  console.log('\n--- Test: CRITICAL - Heredoc with failed Python command ---');
+  console.log('This tests that non-zero exit codes are captured correctly for heredoc commands\n');
+  
+  try {
+    const command = `python3 << 'EOF'
+import sys
+print("This will fail")
+sys.exit(42)
+EOF`;
+    
+    const result = await tmux.executeCommand(command, 10000);
+    
+    const checks = [
+      {
+        name: 'Status is error',
+        pass: result.status === 'error',
+        details: `Expected 'error', got '${result.status}'`
+      },
+      {
+        name: 'Exit code is 42',
+        pass: result.exitCode === 42,
+        details: `Expected 42, got ${result.exitCode}`
+      },
+      {
+        name: 'Output contains Python output',
+        pass: result.result.includes('This will fail'),
+        details: `Result: "${result.result}"`
+      }
+    ];
+    
+    let allPassed = true;
+    for (const check of checks) {
+      logTest(check.name, check.pass, check.pass ? '' : check.details);
+      if (!check.pass) allPassed = false;
+    }
+    
+    return allPassed;
+  } catch (error) {
+    logTest('Heredoc with failed command', false, error.message);
+    return false;
+  }
+}
+
+async function testComplexPythonHeredoc() {
+  console.log('\n--- Test: Complex Python heredoc (like the reported issue) ---');
+  
+  try {
+    // Simulate a more complex Python script similar to the user's example
+    const command = `python3 << 'EOF'
+import csv
+import sys
+
+# Create test data
+data = [
+    ['1', 'Item A', 'Category 1'],
+    ['2', 'Item B', 'Category 2'],
+    ['3', 'Item C', 'Category 1']
+]
+
+# Process and print
+for row in data:
+    print(f"{row[0]}: {row[1]} ({row[2]})")
+
+print(f"\\nTotal: {len(data)} items")
+sys.exit(0)
+EOF`;
+    
+    const result = await tmux.executeCommand(command, 10000);
+    
+    logTest('Status is completed', result.status === 'completed', 
+      `Expected 'completed', got '${result.status}'`);
+    logTest('Exit code is 0', result.exitCode === 0, 
+      `Expected 0, got ${result.exitCode}`);
+    logTest('Output contains processing results', 
+      result.result.includes('Item A') && result.result.includes('Total: 3 items'),
+      `Result: "${result.result}"`);
+    
+    return result.status === 'completed' && result.exitCode === 0;
+  } catch (error) {
+    logTest('Complex Python heredoc', false, error.message);
+    return false;
+  }
+}
+
 async function runAllTests() {
   console.log('╔════════════════════════════════════════════════════════════╗');
   console.log('║          tmux-mcp Edge Cases Unit Tests                   ║');
@@ -210,6 +340,9 @@ async function runAllTests() {
   await testVariousExitCodes();
   await testMultipleCommandsSequence();
   await testMultiLineOutput();
+  await testHeredocWithSuccessfulCommand();
+  await testHeredocWithFailedCommand();
+  await testComplexPythonHeredoc();
   
   // Print summary
   console.log('\n' + '═'.repeat(60));

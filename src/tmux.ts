@@ -73,6 +73,34 @@ const activeCommands = new Map<string, CommandExecution>();
 const startMarkerText = 'TMUX_MCP_START';
 const endMarkerPrefix = "TMUX_MCP_DONE_";
 
+/**
+ * Detect if a command contains heredoc syntax
+ */
+function containsHeredoc(command: string): boolean {
+  // Look for heredoc patterns: << or <<-
+  // Common patterns: << EOF, << 'EOF', << "EOF", <<-EOF, etc.
+  return /<<-?\s*['"]?\w+['"]?/.test(command);
+}
+
+/**
+ * Wrap a command to ensure proper exit code capture
+ * For heredoc commands, we need special handling to ensure the end marker
+ * is on its own line after the heredoc completes
+ */
+function wrapCommandWithMarkers(command: string): string {
+  const endMarkerText = getEndMarkerText();
+  
+  if (containsHeredoc(command)) {
+    // For heredoc commands, we need to ensure the end marker echo is on a new line
+    // after the heredoc EOF delimiter. We also wrap in parentheses to capture exit code.
+    // The key is having a newline after the command before the semicolon
+    return `echo "${startMarkerText}"; ( ${command}\n); echo "${endMarkerText}"`;
+  } else {
+    // For regular commands, use simple semicolon separation
+    return `echo "${startMarkerText}"; ${command}; echo "${endMarkerText}"`;
+  }
+}
+
 // Execute a command in a tmux pane and wait for completion
 export async function executeCommand(command: string, timeoutMs: number = 300000): Promise<CommandExecution> {
   // Validate pane exists
@@ -81,8 +109,7 @@ export async function executeCommand(command: string, timeoutMs: number = 300000
   // Generate unique ID for this command execution
   const commandId = uuidv4();
 
-  const endMarkerText = getEndMarkerText();
-  const fullCommand = `echo "${startMarkerText}"; ${command}; echo "${endMarkerText}"`;
+  const fullCommand = wrapCommandWithMarkers(command);
 
   // Store command in tracking map
   activeCommands.set(commandId, {
