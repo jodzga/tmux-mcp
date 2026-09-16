@@ -19,20 +19,24 @@ const execAsync = promisify(exec);
 // A fake shellfirm that mimics the real `pre-command --test --command <cmd>`
 // output contract: a `---` line, then `[]` (safe) or a YAML list (risky).
 // A command containing the sentinel SHELLFIRM_DANGER is treated as risky.
+// Note: real shellfirm prints its --test report to STDERR (not stdout), so the
+// fake does the same to exercise the same code path.
 const FAKE_SHELLFIRM = `#!/bin/bash
 cmd=""
 while [ $# -gt 0 ]; do
   if [ "$1" = "--command" ]; then shift; cmd="$1"; fi
   shift
 done
-echo "---"
-if [[ "$cmd" == *"SHELLFIRM_DANGER"* ]]; then
-  echo '- id: "test:danger"'
-  echo '  description: Test danger rule matched.'
-  echo '  from: test'
-else
-  echo "[]"
-fi
+{
+  echo "---"
+  if [[ "$cmd" == *"SHELLFIRM_DANGER"* ]]; then
+    echo '- id: "test:danger"'
+    echo '  description: Test danger rule matched.'
+    echo '  from: test'
+  else
+    echo "[]"
+  fi
+} 1>&2
 `;
 
 // Test results tracker

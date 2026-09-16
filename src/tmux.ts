@@ -32,10 +32,12 @@ export async function shellfirmCheck(command: string): Promise<ShellfirmResult> 
   const bin = process.env[SHELLFIRM_BIN_ENV];
   if (!bin) return { risky: false };
 
-  let stdout: string;
+  let output: string;
   try {
     const res = await execFile(bin, ['pre-command', '--test', '--command', command]);
-    stdout = res.stdout;
+    // shellfirm prints its `--test` report to STDERR (stdout stays empty), so combine
+    // both streams before parsing — never rely on stdout alone.
+    output = `${res.stdout ?? ''}\n${res.stderr ?? ''}`;
   } catch (error: any) {
     // Binary missing / crashed / non-zero exit — do NOT let a broken gate pass.
     return {
@@ -44,7 +46,7 @@ export async function shellfirmCheck(command: string): Promise<ShellfirmResult> 
     };
   }
 
-  const lines = stdout.split('\n');
+  const lines = output.split('\n');
   const sepIndex = lines.findIndex(line => line.trim() === '---');
   const body = (sepIndex >= 0 ? lines.slice(sepIndex + 1) : lines).join('\n').trim();
   if (body === '' || body === '[]') return { risky: false };
