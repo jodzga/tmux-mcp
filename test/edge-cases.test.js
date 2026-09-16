@@ -10,8 +10,30 @@
 import * as tmux from '../build/tmux.js';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { writeFileSync, chmodSync, mkdtempSync } from 'fs';
+import os from 'os';
+import path from 'path';
 
 const execAsync = promisify(exec);
+
+// A fake shellfirm that mimics the real `pre-command --test --command <cmd>`
+// output contract: a `---` line, then `[]` (safe) or a YAML list (risky).
+// A command containing the sentinel SHELLFIRM_DANGER is treated as risky.
+const FAKE_SHELLFIRM = `#!/bin/bash
+cmd=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--command" ]; then shift; cmd="$1"; fi
+  shift
+done
+echo "---"
+if [[ "$cmd" == *"SHELLFIRM_DANGER"* ]]; then
+  echo '- id: "test:danger"'
+  echo '  description: Test danger rule matched.'
+  echo '  from: test'
+else
+  echo "[]"
+fi
+`;
 
 // Test results tracker
 const results = {
@@ -319,6 +341,57 @@ EOF`;
   }
 }
 
+async function testShellfirmGate() {
+  console.log('\n--- Test: shellfirm safety gate ---');
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'tmux-mcp-sf-'));
+  const fakeBin = path.join(dir, 'shellfirm');
+  writeFileSync(fakeBin, FAKE_SHELLFIRM, { mode: 0o755 });
+  chmodSync(fakeBin, 0o755);
+  const prev = process.env.TMUX_MCP_SHELLFIRM_BIN;
+
+  try {
+    process.env.TMUX_MCP_SHELLFIRM_BIN = fakeBin;
+
+    // 1. Safe command runs normally through the gate.
+    const safe = await tmux.executeCommand('echo "gate-safe"', 5000);
+    logTest('gate: safe command runs',
+      safe.status === 'completed' && safe.result.includes('gate-safe'),
+      `status=${safe.status}, result="${safe.result}"`);
+
+    // 2. Risky command is refused and NOT executed.
+    const risky = await tmux.executeCommand('echo SHELLFIRM_DANGER', 5000);
+    logTest('gate: risky command blocked',
+      risky.status === 'error' && risky.result.includes('Blocked by shellfirm'),
+      `status=${risky.status}, result="${risky.result}"`);
+
+    // 3. allowRisky:true overrides the block and executes.
+    const overridden = await tmux.executeCommand('echo SHELLFIRM_DANGER_ok', 5000, true);
+    logTest('gate: allowRisky overrides block',
+      overridden.status === 'completed' && overridden.result.includes('SHELLFIRM_DANGER_ok'),
+      `status=${overridden.status}, result="${overridden.result}"`);
+
+    // 4. Direct shellfirmCheck: unset binary is a no-op (safe).
+    delete process.env.TMUX_MCP_SHELLFIRM_BIN;
+    const noBin = await tmux.shellfirmCheck('echo SHELLFIRM_DANGER');
+    logTest('gate: no binary -> no-op safe', noBin.risky === false,
+      `risky=${noBin.risky}`);
+
+    // 5. Direct shellfirmCheck: broken/missing binary fails CLOSED (risky).
+    process.env.TMUX_MCP_SHELLFIRM_BIN = path.join(dir, 'does-not-exist');
+    const broken = await tmux.shellfirmCheck('echo hi');
+    logTest('gate: broken binary -> fail closed (risky)', broken.risky === true,
+      `risky=${broken.risky}, detail="${broken.detail}"`);
+
+    return true;
+  } catch (error) {
+    logTest('shellfirm safety gate', false, error.message);
+    return false;
+  } finally {
+    if (prev === undefined) delete process.env.TMUX_MCP_SHELLFIRM_BIN;
+    else process.env.TMUX_MCP_SHELLFIRM_BIN = prev;
+  }
+}
+
 async function runAllTests() {
   console.log('╔════════════════════════════════════════════════════════════╗');
   console.log('║          tmux-mcp Edge Cases Unit Tests                   ║');
@@ -343,7 +416,8 @@ async function runAllTests() {
   await testHeredocWithSuccessfulCommand();
   await testHeredocWithFailedCommand();
   await testComplexPythonHeredoc();
-  
+  await testShellfirmGate();
+
   // Print summary
   console.log('\n' + '═'.repeat(60));
   console.log('SUMMARY');

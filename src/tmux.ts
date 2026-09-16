@@ -1,8 +1,63 @@
-import { exec as execCallback } from "child_process";
+import { exec as execCallback, execFile as execFileCallback } from "child_process";
 import { promisify } from "util";
 import { v4 as uuidv4 } from 'uuid';
 
 const exec = promisify(execCallback);
+const execFile = promisify(execFileCallback);
+
+// Optional cross-harness safety gate. When TMUX_MCP_SHELLFIRM_BIN points at a
+// `shellfirm` binary, every execute-command is screened with `shellfirm
+// pre-command --test` before it is sent to the pane. This is the ONLY way to
+// gate command execution on harnesses (e.g. Codex) whose approval/hook layer
+// cannot block a tool call, so the check lives inside the server itself.
+const SHELLFIRM_BIN_ENV = 'TMUX_MCP_SHELLFIRM_BIN';
+
+export interface ShellfirmResult {
+  risky: boolean;
+  detail?: string;
+}
+
+/**
+ * Screen a raw command with shellfirm's read-only `pre-command --test`.
+ *
+ * - No-op (safe) when TMUX_MCP_SHELLFIRM_BIN is unset — the gate is opt-in.
+ * - Fails CLOSED (risky) when the binary is configured but cannot be run, so a
+ *   misconfigured gate never silently permits a dangerous command.
+ *
+ * shellfirm `--test` exits 0 for both safe and risky commands and prints a
+ * `---` line followed by YAML: `[]` means no rule matched (safe); otherwise a
+ * list of matched rules, each with a `description:` we surface to the caller.
+ */
+export async function shellfirmCheck(command: string): Promise<ShellfirmResult> {
+  const bin = process.env[SHELLFIRM_BIN_ENV];
+  if (!bin) return { risky: false };
+
+  let stdout: string;
+  try {
+    const res = await execFile(bin, ['pre-command', '--test', '--command', command]);
+    stdout = res.stdout;
+  } catch (error: any) {
+    // Binary missing / crashed / non-zero exit — do NOT let a broken gate pass.
+    return {
+      risky: true,
+      detail: `shellfirm safety check could not run (${bin}): ${error?.message ?? error}`
+    };
+  }
+
+  const lines = stdout.split('\n');
+  const sepIndex = lines.findIndex(line => line.trim() === '---');
+  const body = (sepIndex >= 0 ? lines.slice(sepIndex + 1) : lines).join('\n').trim();
+  if (body === '' || body === '[]') return { risky: false };
+
+  const descriptions = lines
+    .filter(line => line.trim().startsWith('description:'))
+    .map(line => line.replace(/^\s*description:\s*/, '').replace(/^["']|["']$/g, '').trim())
+    .filter(Boolean);
+  const detail = descriptions.length > 0
+    ? descriptions.join('; ')
+    : 'Command matched shellfirm safety rules.';
+  return { risky: true, detail };
+}
 
 interface CommandExecution {
   id: string;
@@ -102,10 +157,37 @@ function wrapCommandWithMarkers(command: string): string {
 }
 
 // Execute a command in a tmux pane and wait for completion
-export async function executeCommand(command: string, timeoutMs: number = 300000): Promise<CommandExecution> {
+export async function executeCommand(
+  command: string,
+  timeoutMs: number = 300000,
+  allowRisky: boolean = false
+): Promise<CommandExecution> {
   // Validate pane exists
   await validatePane();
-  
+
+  // Safety gate (cross-harness): screen with shellfirm and refuse risky commands
+  // unless the caller explicitly overrides after human approval. capture-pane is
+  // read-only and intentionally NOT gated.
+  if (!allowRisky) {
+    const check = await shellfirmCheck(command);
+    if (check.risky) {
+      const blockedId = uuidv4();
+      const blocked: CommandExecution = {
+        id: blockedId,
+        paneId: HARDCODED_PANE_ID,
+        command,
+        status: 'error',
+        startTime: new Date(),
+        result:
+          `⚠️ Blocked by shellfirm safety check — the command was NOT executed.\n` +
+          `${check.detail ?? 'Command matched shellfirm safety rules.'}\n\n` +
+          `If you have explicit human approval, re-invoke execute-command with allowRisky: true.`
+      };
+      activeCommands.set(blockedId, blocked);
+      return blocked;
+    }
+  }
+
   // Generate unique ID for this command execution
   const commandId = uuidv4();
 
